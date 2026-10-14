@@ -1,11 +1,12 @@
 import React from 'react';
+import logoBrio from '../logoBrio.png';
 
 export default function Welcome() {
   return (
     <div className="welcome-row">
       <div>
         <img
-          src="/src/logoBrio.png"
+          src={logoBrio}
           alt="BrioLib logo"
           className="welcome-logo"
           style={{ width: 80, height: 80, borderRadius: 18, objectFit: 'cover', marginBottom: 16 }}

@@ -5,7 +5,7 @@ import Icon from './Icon.jsx';
 export default function MobileHeader() {
   return (
     <header className="mobile-header">
-      <Brand showMark={false} />
+      <Brand />
       <span className="mobile-library-label">Sua biblioteca</span>
     </header>
   );
