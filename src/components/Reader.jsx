@@ -58,15 +58,20 @@ export default function Reader({
 
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d');
+        const outputScale = window.devicePixelRatio || 1;
         const cssWidth = Math.floor(viewport.width);
         const cssHeight = Math.floor(viewport.height);
-        canvas.width = cssWidth;
-        canvas.height = cssHeight;
+        canvas.width = Math.floor(cssWidth * outputScale);
+        canvas.height = Math.floor(cssHeight * outputScale);
         canvas.style.width = `${cssWidth}px`;
         canvas.style.height = `${cssHeight}px`;
 
         if (renderTaskRef.current) renderTaskRef.current.cancel();
-        const renderTask = pdfPage.render({ canvasContext: context, viewport });
+        const renderTask = pdfPage.render({
+          canvasContext: context,
+          viewport,
+          transform: outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : undefined,
+        });
         renderTaskRef.current = renderTask;
         await renderTask.promise;
         if (cancelled) return;
