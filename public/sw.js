@@ -1,4 +1,4 @@
-const CACHE_NAME = 'briolib-v3';
+const CACHE_NAME = 'briolib-v4';
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

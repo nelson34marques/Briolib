@@ -38,16 +38,6 @@ export default function UploadCard({ inputRef, onAddPdf }) {
           <Icon name="upload" size={17} /> Escolher um PDF <Icon name="arrow" size={16} />
         </button>
         <span className="upload-caption">ou arraste o arquivo para cá · Seus arquivos ficam no dispositivo</span>
-        <input
-          ref={inputRef}
-          type="file"
-          accept="application/pdf,.pdf"
-          hidden
-          onChange={(event) => {
-            onAddPdf(event.target.files[0]);
-            event.target.value = '';
-          }}
-        />
       </div>
       <div className="upload-stamp">
         <Icon name="file" size={17} />

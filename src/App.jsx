@@ -61,14 +61,24 @@ function App() {
       <main className="main-content">
         <MobileHeader />
         <div className="content-wrap">
+          <input
+            ref={inputRef}
+            type="file"
+            accept="application/pdf,.pdf"
+            hidden
+            onChange={(event) => {
+              handleAddPdf(event.target.files[0]);
+              event.target.value = '';
+            }}
+          />
           {currentView === 'home' && (
             <>
               <Welcome />
               <UploadCard inputRef={inputRef} onAddPdf={handleAddPdf} />
-              <Notice type="error" message={library.error} onClose={() => library.setError('')} />
-              <Notice loading={library.loading || reader.loading} />
             </>
           )}
+          <Notice type="error" message={library.error} onClose={() => library.setError('')} />
+          <Notice loading={library.loading || reader.loading} />
           <LibrarySection
             books={library.books}
             onAdd={() => inputRef.current?.click()}

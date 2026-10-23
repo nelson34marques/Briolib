@@ -1,8 +1,35 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import Brand from './Brand.jsx';
 import Icon from './Icon.jsx';
 import { formatSize } from '../lib/format.js';
 import { loadPdfJs } from '../lib/pdf.js';
+
+const TURN_DURATION = 820;
+const STACK_MAX = 14;
+
+function readCssNumber(element, name, fallback) {
+  const raw = getComputedStyle(element).getPropertyValue(name);
+  const value = parseFloat(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+// Liberta a memória de um canvas de imediato (o Safari iOS limita a memória total de canvas).
+function releaseCanvas(canvas) {
+  if (!canvas) return;
+  canvas.width = 0;
+  canvas.height = 0;
+}
+
+function makeThumb(source) {
+  const thumb = document.createElement('canvas');
+  const ratio = 1 / 6;
+  thumb.width = Math.max(1, Math.round(source.canvas.width * ratio));
+  thumb.height = Math.max(1, Math.round(source.canvas.height * ratio));
+  thumb.style.width = `${source.cssWidth}px`;
+  thumb.style.height = `${source.cssHeight}px`;
+  thumb.getContext('2d').drawImage(source.canvas, 0, 0, thumb.width, thumb.height);
+  return thumb;
+}
 
 export default function Reader({
   book,
@@ -21,10 +48,23 @@ export default function Reader({
   const textLayerRef = useRef(null);
   const swipeStartRef = useRef(null);
   const renderTaskRef = useRef(null);
+  const prevPageRef = useRef(null);
+  const imageRef = useRef(null);
+  const pendingCommitRef = useRef(null);
+  const visiblePageRef = useRef(null);
+  const leafRef = useRef(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [toolbar, setToolbar] = useState(null);
   const [justMarked, setJustMarked] = useState(false);
   const [renderKey, setRenderKey] = useState(0);
+  const [leaf, setLeaf] = useState(null);
+
+  // leafRef é atualizado de imediato (não espera pelo re-render) para o render assíncrono
+  // do pdf.js nunca libertar um canvas que a folha ainda vai usar.
+  const startLeaf = (next) => {
+    leafRef.current = next;
+    setLeaf(next);
+  };
 
   useEffect(() => {
     let timer;
@@ -39,9 +79,77 @@ export default function Reader({
     };
   }, []);
 
+  const paintVisible = (image) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !image) return;
+    canvas.width = image.canvas.width;
+    canvas.height = image.canvas.height;
+    canvas.style.width = `${image.cssWidth}px`;
+    canvas.style.height = `${image.cssHeight}px`;
+    canvas.getContext('2d').drawImage(image.canvas, 0, 0);
+    visiblePageRef.current = image.page;
+  };
+
+  const blankVisible = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#ffffff';
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    visiblePageRef.current = null;
+  };
+
+  const finishLeaf = () => {
+    if (pendingCommitRef.current) {
+      paintVisible(pendingCommitRef.current);
+      pendingCommitRef.current = null;
+    }
+    const current = leafRef.current;
+    leafRef.current = null;
+    if (current) {
+      releaseCanvas(current.thumb);
+      if (current.image !== imageRef.current) releaseCanvas(current.image.canvas);
+    }
+    setLeaf(null);
+  };
+
+  // A folha antiga sobe; a página de baixo fica em branco no mesmo frame em que a folha aparece.
+  // Se a página nova já foi pintada entretanto (render em cache é quase instantâneo), não se apaga.
+  useLayoutEffect(() => {
+    if (leaf?.dir > 0 && visiblePageRef.current === leaf.image.page) blankVisible();
+  }, [leaf]);
+
+  useEffect(() => {
+    if (!leaf) return undefined;
+    const timer = window.setTimeout(finishLeaf, TURN_DURATION + 250);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leaf]);
+
   useEffect(() => {
     if (!pdf || !canvasRef.current || !pageFrameRef.current) return undefined;
     let cancelled = false;
+
+    const prevPage = prevPageRef.current;
+    const prevImage = imageRef.current;
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    const direction = flipDirection || (page > (prevPage ?? page) ? 1 : -1);
+    const isTurn =
+      !reducedMotion &&
+      prevPage !== null &&
+      prevPage !== page &&
+      !!prevImage &&
+      prevImage.page === prevPage;
+    prevPageRef.current = page;
+
+    if (pendingCommitRef.current) {
+      paintVisible(pendingCommitRef.current);
+      pendingCommitRef.current = null;
+    }
+
+    if (isTurn && direction > 0) {
+      startLeaf({ id: Date.now(), dir: 1, image: prevImage, thumb: makeThumb(prevImage) });
+    }
 
     const render = async () => {
       try {
@@ -51,20 +159,22 @@ export default function Reader({
 
         const baseViewport = pdfPage.getViewport({ scale: 1 });
         const frame = pageFrameRef.current;
-        const availableWidth = Math.max(240, frame.clientWidth - 32);
-        const availableHeight = Math.max(300, frame.clientHeight - 28);
+        const chromeX = readCssNumber(frame, '--chrome-x', 32);
+        const chromeY = readCssNumber(frame, '--chrome-y', 28);
+        const availableWidth = Math.max(240, frame.clientWidth - chromeX);
+        const availableHeight = Math.max(300, frame.clientHeight - chromeY);
         const scale = Math.min(1.5, availableWidth / baseViewport.width, availableHeight / baseViewport.height);
         const viewport = pdfPage.getViewport({ scale });
 
-        const canvas = canvasRef.current;
-        const context = canvas.getContext('2d');
         const outputScale = window.devicePixelRatio || 1;
         const cssWidth = Math.floor(viewport.width);
         const cssHeight = Math.floor(viewport.height);
-        canvas.width = Math.floor(cssWidth * outputScale);
-        canvas.height = Math.floor(cssHeight * outputScale);
-        canvas.style.width = `${cssWidth}px`;
-        canvas.style.height = `${cssHeight}px`;
+        const offscreen = document.createElement('canvas');
+        offscreen.width = Math.floor(cssWidth * outputScale);
+        offscreen.height = Math.floor(cssHeight * outputScale);
+        offscreen.style.width = `${cssWidth}px`;
+        offscreen.style.height = `${cssHeight}px`;
+        const context = offscreen.getContext('2d');
 
         if (renderTaskRef.current) renderTaskRef.current.cancel();
         const renderTask = pdfPage.render({
@@ -75,6 +185,20 @@ export default function Reader({
         renderTaskRef.current = renderTask;
         await renderTask.promise;
         if (cancelled) return;
+
+        const image = { canvas: offscreen, cssWidth, cssHeight, page };
+        const replaced = imageRef.current;
+        imageRef.current = image;
+        if (replaced && replaced !== leafRef.current?.image && replaced !== pendingCommitRef.current) {
+          releaseCanvas(replaced.canvas);
+        }
+
+        if (isTurn && direction < 0) {
+          pendingCommitRef.current = image;
+          startLeaf({ id: Date.now(), dir: -1, image, thumb: makeThumb(image) });
+        } else {
+          paintVisible(image);
+        }
 
         const textContent = await pdfPage.getTextContent();
         if (cancelled) return;
@@ -126,6 +250,7 @@ export default function Reader({
         renderTaskRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pdf, page, renderKey]);
 
   useEffect(() => {
@@ -229,9 +354,24 @@ export default function Reader({
     window.setTimeout(() => setJustMarked(false), 1600);
   };
 
+  const handleLeafAnimationEnd = (event) => {
+    if (event.target !== event.currentTarget) return;
+    if (!String(event.animationName).startsWith('leaf-turn')) return;
+    finishLeaf();
+  };
+
+  const attachLeafCanvas = (node) => (element) => {
+    if (element && node && element.firstChild !== node) {
+      element.replaceChildren(node);
+    }
+  };
+
   const totalPages = pdf?.numPages ?? book.totalPages ?? page;
   const pageHighlights = highlights?.[page] ?? [];
   const isMarked = book.stoppedPage === page;
+  const progress = totalPages > 1 ? (page - 1) / (totalPages - 1) : 0;
+  const stackLeft = Math.max(2, Math.round(STACK_MAX * progress));
+  const stackRight = Math.max(2, Math.round(STACK_MAX * (1 - progress)));
 
   return (
     <main className="reader">
@@ -279,37 +419,66 @@ export default function Reader({
             swipeStartRef.current = null;
           }}
         >
-          <div key={page} className={`paper ${flipDirection > 0 ? 'paper-turn-next' : 'paper-turn-previous'}`}>
-            <div className="page-content" ref={contentRef} onPointerUp={handleSelectionEnd}>
-              <canvas ref={canvasRef} aria-label={`Página ${page} do PDF`} />
-              <div className="text-layer" ref={textLayerRef} aria-hidden="true" />
-              <div className="highlight-layer">
-                {pageHighlights.map((rect, index) => (
-                  <button
-                    key={index}
-                    type="button"
-                    className="highlight-rect"
-                    style={{
-                      left: `${rect.x * 100}%`,
-                      top: `${rect.y * 100}%`,
-                      width: `${rect.w * 100}%`,
-                      height: `${rect.h * 100}%`,
-                    }}
-                    onClick={() => removeHighlight(index)}
-                    title="Clique para remover o destaque"
-                    aria-label="Remover destaque"
-                  />
-                ))}
-              </div>
-              {toolbar && (
-                <div className="selection-toolbar" style={{ left: toolbar.x, top: toolbar.y }}>
-                  <button type="button" onClick={addHighlight}>
-                    <Icon name="highlight" size={15} />
-                    Destacar
-                  </button>
+          <div
+            className="book"
+            style={{ '--stack-left': `${stackLeft}px`, '--stack-right': `${stackRight}px` }}
+          >
+            <div className="book-edge book-edge--left" aria-hidden="true" />
+            <div className="book-edge book-edge--right" aria-hidden="true" />
+            <div className="paper">
+              <div className="page-content" ref={contentRef} onPointerUp={handleSelectionEnd}>
+                <canvas ref={canvasRef} aria-label={`Página ${page} do PDF`} />
+                <div className="paper-grain" aria-hidden="true" />
+                <div className="text-layer" ref={textLayerRef} aria-hidden="true" />
+                <div className="highlight-layer">
+                  {pageHighlights.map((rect, index) => (
+                    <button
+                      key={index}
+                      type="button"
+                      className="highlight-rect"
+                      style={{
+                        left: `${rect.x * 100}%`,
+                        top: `${rect.y * 100}%`,
+                        width: `${rect.w * 100}%`,
+                        height: `${rect.h * 100}%`,
+                      }}
+                      onClick={() => removeHighlight(index)}
+                      title="Clique para remover o destaque"
+                      aria-label="Remover destaque"
+                    />
+                  ))}
                 </div>
+                {toolbar && (
+                  <div className="selection-toolbar" style={{ left: toolbar.x, top: toolbar.y }}>
+                    <button type="button" onClick={addHighlight}>
+                      <Icon name="highlight" size={15} />
+                      Destacar
+                    </button>
+                  </div>
+                )}
+              </div>
+              {leaf && (
+                <div
+                  key={`shade-${leaf.id}`}
+                  className={`page-shade ${leaf.dir > 0 ? 'page-shade--next' : 'page-shade--prev'}`}
+                  aria-hidden="true"
+                />
               )}
             </div>
+            {leaf && (
+              <div className="leaf-stage" aria-hidden="true">
+                <div
+                  key={leaf.id}
+                  className={`leaf ${leaf.dir > 0 ? 'leaf--next' : 'leaf--prev'}`}
+                  onAnimationEnd={handleLeafAnimationEnd}
+                >
+                  <div className="leaf-face leaf-front" ref={attachLeafCanvas(leaf.image.canvas)} />
+                  <div className="leaf-face leaf-back">
+                    <div className="leaf-bleed" ref={attachLeafCanvas(leaf.thumb)} />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
         <button
